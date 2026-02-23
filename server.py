@@ -51,13 +51,33 @@ def _load_data() -> pl.DataFrame:
     return pl.read_csv(DATA_FILE)
 
 
+# def _fetch_rest_countries(country_code: str) -> dict:
+#     """Fetch country info from REST Countries API."""
+#     url = f"https://restcountries.com/v3.1/alpha/{country_code}"
+#     with httpx.Client(timeout=30.0) as client:
+#         response = client.get(url)
+#         response.raise_for_status()
+#         return response.json()[0]
+
 def _fetch_rest_countries(country_code: str) -> dict:
     """Fetch country info from REST Countries API."""
     url = f"https://restcountries.com/v3.1/alpha/{country_code}"
     with httpx.Client(timeout=30.0) as client:
         response = client.get(url)
         response.raise_for_status()
-        return response.json()[0]
+        data = response.json()
+
+        # REST Countries 通常返回 list，取第一个；但要防空
+        if isinstance(data, list):
+            if not data:
+                raise ValueError(f"No country found for code: {country_code}")
+            return data[0]
+
+        # 少数情况下可能是 dict
+        if isinstance(data, dict):
+            return data
+
+        raise ValueError(f"Unexpected REST Countries response type: {type(data)}")
 
 
 def _fetch_world_bank_indicator(
@@ -118,7 +138,12 @@ def get_countries() -> str:
     """
     df = _load_data()
     # TODO: Implement - return unique country codes and names as JSON string
-    pass
+    countries = (
+        df.select(["countryiso3code", "country"])
+        .unique()
+        .sort("countryiso3code")
+    )
+    return countries.write_json()
 
 
 @mcp.resource("data://indicators/{country_code}")
@@ -141,7 +166,12 @@ def get_country_indicators(country_code: str) -> str:
     """
     df = _load_data()
     # TODO: Implement - filter by country and return as JSON string
-    pass
+    result = df.filter(pl.col("countryiso3code") == country_code)
+
+    if result.height == 0:
+        return json.dumps({"error": f"No data found for country_code: {country_code}"})
+
+    return result.write_json()
 
 
 # =============================================================================
@@ -186,7 +216,33 @@ def get_country_info(country_code: str) -> dict:
     """
     logger.info(f"Fetching country info for: {country_code}")
     # TODO: Implement using _fetch_rest_countries()
-    pass
+    try:
+        raw = _fetch_rest_countries(country_code)
+
+        name = raw.get("name", {}).get("common") or raw.get("name", {}).get("official")
+        capital_list = raw.get("capital") or []
+        capital = capital_list[0] if capital_list else None
+
+        languages = list((raw.get("languages") or {}).values())
+        currencies = list((raw.get("currencies") or {}).keys())
+
+        return {
+            "name": name,
+            "capital": capital,
+            "region": raw.get("region"),
+            "subregion": raw.get("subregion"),
+            "languages": languages,
+            "currencies": currencies,
+            "population": raw.get("population"),
+            "flag": raw.get("flag"),
+        }
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"REST Countries API error for {country_code}: {e}")
+        return {"error": f"Country not found: {country_code}"}
+    except Exception as e:
+        logger.error(f"Error fetching country info for {country_code}: {e}")
+        return {"error": f"Failed to fetch country info for {country_code}"}
 
 
 @mcp.tool()
@@ -227,7 +283,44 @@ def get_live_indicator(
     """
     logger.info(f"Fetching {indicator} for {country_code} in {year}")
     # TODO: Implement using _fetch_world_bank_indicator()
-    pass
+    try:
+        records = _fetch_world_bank_indicator(country_code, indicator, year)
+
+        if not records:
+            return {
+                "country": country_code,
+                "indicator": indicator,
+                "year": year,
+                "value": None,
+                "error": f"No data found for {country_code} {indicator} in {year}",
+            }
+
+        # 一般 year 过滤后就是当年的记录，但为了稳还是找一下
+        match = None
+        for r in records:
+            if str(r.get("date")) == str(year):
+                match = r
+                break
+
+        if match is None:
+            # 兜底：用第一条
+            match = records[0]
+
+        return {
+            "country": country_code,
+            "country_name": (match.get("country") or {}).get("value"),
+            "indicator": indicator,
+            "indicator_name": (match.get("indicator") or {}).get("value"),
+            "year": year,
+            "value": match.get("value"),
+        }
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"World Bank API error: {e}")
+        return {"error": f"API error fetching {indicator} for {country_code} in {year}"}
+    except Exception as e:
+        logger.error(f"Error fetching indicator: {e}")
+        return {"error": f"Failed to fetch indicator {indicator} for {country_code} in {year}"}
 
 
 @mcp.tool()
@@ -261,7 +354,66 @@ def compare_countries(
     """
     logger.info(f"Comparing {indicator} for countries: {country_codes}")
     # TODO: Implement - call get_live_indicator for each country
-    pass
+    results: list[dict] = []
+
+    for code in country_codes:
+        try:
+            records = _fetch_world_bank_indicator(code, indicator, year)
+
+            if not records:
+                results.append({
+                    "country": code,
+                    "country_name": None,
+                    "indicator": indicator,
+                    "indicator_name": None,
+                    "year": year,
+                    "value": None,
+                    "error": f"No data found for {code} {indicator} in {year}",
+                })
+                continue
+
+            # 找匹配年份
+            match = None
+            for r in records:
+                if str(r.get("date")) == str(year):
+                    match = r
+                    break
+            if match is None:
+                match = records[0]
+
+            results.append({
+                "country": code,
+                "country_name": (match.get("country") or {}).get("value"),
+                "indicator": indicator,
+                "indicator_name": (match.get("indicator") or {}).get("value"),
+                "year": year,
+                "value": match.get("value"),
+            })
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"World Bank API error for {code}: {e}")
+            results.append({
+                "country": code,
+                "country_name": None,
+                "indicator": indicator,
+                "indicator_name": None,
+                "year": year,
+                "value": None,
+                "error": "API request failed",
+            })
+        except Exception as e:
+            logger.error(f"Error comparing {code}: {e}")
+            results.append({
+                "country": code,
+                "country_name": None,
+                "indicator": indicator,
+                "indicator_name": None,
+                "year": year,
+                "value": None,
+                "error": "Failed to fetch",
+            })
+
+    return results
 
 
 # =============================================================================
