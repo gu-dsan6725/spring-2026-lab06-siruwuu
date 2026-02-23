@@ -566,3 +566,129 @@ if __name__ == "__main__":
 
 - **Streamable HTTP** (recommended): `mcp.run(transport="streamable-http")`
 - **stdio**: `mcp.run(transport="stdio")` - for subprocess-based clients
+
+---
+
+# Implementation Details
+
+## MCP Server Overview
+
+This project implements a Streamable HTTP MCP server (`world-bank-server`) that exposes World Bank development indicators to AI agents.
+
+The server integrates:
+
+- Local historical indicator data from a CSV file (Resources)
+- Live country and indicator data from external APIs (Tools)
+
+Transport: Streamable HTTP on `http://127.0.0.1:8765/mcp`
+
+---
+
+## Resources Implemented
+
+### `data://schema`
+Returns dataset column names and types from the local CSV file.
+
+### `data://countries`
+Returns all unique country codes and country names in the dataset.
+
+Implementation:
+- Load CSV with Polars
+- Select `countryiso3code` and `country`
+- Return unique values as JSON
+
+### `data://indicators/{country_code}`
+Returns all indicator records for a given country from local data.
+
+Implementation:
+- Filter Polars DataFrame by `countryiso3code`
+- Return JSON array
+- Returns error JSON if country not found
+
+---
+
+## Tools Implemented
+
+### `get_country_info(country_code)`
+Fetches country metadata from REST Countries API.
+
+Returned fields:
+- name
+- capital
+- region
+- subregion
+- languages
+- currencies
+- population
+- flag
+
+Error handling included for invalid codes and API failures.
+
+---
+
+### `get_live_indicator(country_code, indicator, year)`
+Fetches a World Bank indicator value for a specific country and year.
+
+Implementation:
+- Calls World Bank API
+- Matches requested year
+- Returns indicator metadata and value
+- Returns error if no data available
+
+---
+
+### `compare_countries(country_codes, indicator, year)`
+Compares an indicator across multiple countries.
+
+Implementation:
+- Loops through country list
+- Fetches indicator for each country
+- Returns list of results
+- Individual country failures do not stop execution
+
+---
+
+## Error Handling
+
+The server gracefully handles:
+
+- Invalid country codes
+- API request failures
+- Missing indicator data
+- Empty dataset filters
+
+All errors return structured JSON messages instead of crashing.
+
+---
+
+## How to Run
+
+Start MCP server:
+
+```bash
+uv run python server.py
+````
+
+Server endpoint:
+
+```
+http://127.0.0.1:8765/mcp
+```
+
+---
+
+## Test Results
+
+All provided MCP tests pass successfully using the Python test client.
+
+Run tests:
+
+```bash
+uv run python test_client.py
+```
+
+See `test_results.log` for full output showing:
+
+```
+ALL TESTS PASSED
+```
