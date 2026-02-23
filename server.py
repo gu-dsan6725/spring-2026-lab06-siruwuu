@@ -67,13 +67,13 @@ def _fetch_rest_countries(country_code: str) -> dict:
         response.raise_for_status()
         data = response.json()
 
-        # REST Countries 通常返回 list，取第一个；但要防空
+        # REST Countries typically returns a list, taking the first item; however, it's important to prevent empty lists.
         if isinstance(data, list):
             if not data:
                 raise ValueError(f"No country found for code: {country_code}")
             return data[0]
 
-        # 少数情况下可能是 dict
+        # In rare cases, it might be dict
         if isinstance(data, dict):
             return data
 
@@ -295,7 +295,6 @@ def get_live_indicator(
                 "error": f"No data found for {country_code} {indicator} in {year}",
             }
 
-        # 一般 year 过滤后就是当年的记录，但为了稳还是找一下
         match = None
         for r in records:
             if str(r.get("date")) == str(year):
@@ -303,7 +302,6 @@ def get_live_indicator(
                 break
 
         if match is None:
-            # 兜底：用第一条
             match = records[0]
 
         return {
@@ -372,7 +370,7 @@ def compare_countries(
                 })
                 continue
 
-            # 找匹配年份
+            # Find matching year
             match = None
             for r in records:
                 if str(r.get("date")) == str(year):
